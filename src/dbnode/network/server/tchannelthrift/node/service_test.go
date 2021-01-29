@@ -39,6 +39,7 @@ import (
 	"github.com/m3db/m3/src/dbnode/storage"
 	"github.com/m3db/m3/src/dbnode/storage/block"
 	"github.com/m3db/m3/src/dbnode/storage/index"
+	"github.com/m3db/m3/src/dbnode/storage/series"
 	"github.com/m3db/m3/src/dbnode/topology"
 	"github.com/m3db/m3/src/dbnode/tracepoint"
 	"github.com/m3db/m3/src/dbnode/ts"
@@ -241,7 +242,7 @@ func TestServiceQuery(t *testing.T) {
 	nsID := "metrics"
 
 	streams := map[string]xio.SegmentReader{}
-	series := map[string][]struct {
+	seriesData := map[string][]struct {
 		t time.Time
 		v float64
 	}{
@@ -261,7 +262,7 @@ func TestServiceQuery(t *testing.T) {
 		"foo": {{"foo", "bar"}, {"baz", "dxk"}},
 		"bar": {{"foo", "bar"}, {"dzk", "baz"}},
 	}
-	for id, s := range series {
+	for id, s := range seriesData {
 		enc := testStorageOpts.EncoderPool().Get()
 		enc.Reset(start, 0, nil)
 		for _, v := range s {
@@ -276,11 +277,13 @@ func TestServiceQuery(t *testing.T) {
 		streams[id] = stream
 		mockDB.EXPECT().
 			ReadEncoded(ctx, ident.NewIDMatcher(nsID), ident.NewIDMatcher(id), start, end).
-			Return([][]xio.BlockReader{{
-				xio.BlockReader{
-					SegmentReader: stream,
-				},
-			}}, nil)
+			Return(&series.FakeBlockReaderIter{
+				Readers: [][]xio.BlockReader{{
+					xio.BlockReader{
+						SegmentReader: stream,
+					},
+				}},
+			}, nil)
 	}
 
 	req, err := idx.NewRegexpQuery([]byte("foo"), []byte("b.*"))
@@ -364,10 +367,10 @@ func TestServiceQuery(t *testing.T) {
 			assert.Equal(t, tags[id][i].value, tag.Value)
 		}
 
-		require.Equal(t, len(series[id]), len(elem.Datapoints))
+		require.Equal(t, len(seriesData[id]), len(elem.Datapoints))
 		for i, dp := range elem.Datapoints {
-			assert.Equal(t, series[id][i].t.Unix(), dp.Timestamp)
-			assert.Equal(t, series[id][i].v, dp.Value)
+			assert.Equal(t, seriesData[id][i].t.Unix(), dp.Timestamp)
+			assert.Equal(t, seriesData[id][i].v, dp.Value)
 		}
 	}
 }
@@ -582,10 +585,12 @@ func TestServiceFetch(t *testing.T) {
 	stream, _ := enc.Stream(ctx)
 	mockDB.EXPECT().
 		ReadEncoded(ctx, ident.NewIDMatcher(nsID), ident.NewIDMatcher("foo"), start, end).
-		Return([][]xio.BlockReader{
-			{
+		Return(&series.FakeBlockReaderIter{
+			Readers: [][]xio.BlockReader{
 				{
-					SegmentReader: stream,
+					{
+						SegmentReader: stream,
+					},
 				},
 			},
 		}, nil)
@@ -726,7 +731,7 @@ func TestServiceFetchBatchRaw(t *testing.T) {
 	nsID := "metrics"
 
 	streams := map[string]xio.SegmentReader{}
-	series := map[string][]struct {
+	seriesData := map[string][]struct {
 		t time.Time
 		v float64
 	}{
@@ -739,7 +744,7 @@ func TestServiceFetchBatchRaw(t *testing.T) {
 			{start.Add(30 * time.Second), 4.0},
 		},
 	}
-	for id, s := range series {
+	for id, s := range seriesData {
 		enc := testStorageOpts.EncoderPool().Get()
 		enc.Reset(start, 0, nil)
 		for _, v := range s {
@@ -754,10 +759,12 @@ func TestServiceFetchBatchRaw(t *testing.T) {
 		streams[id] = stream
 		mockDB.EXPECT().
 			ReadEncoded(ctx, ident.NewIDMatcher(nsID), ident.NewIDMatcher(id), start, end).
-			Return([][]xio.BlockReader{
-				{
+			Return(&series.FakeBlockReaderIter{
+				Readers: [][]xio.BlockReader{
 					{
-						SegmentReader: stream,
+						{
+							SegmentReader: stream,
+						},
 					},
 				},
 			}, nil)
@@ -824,7 +831,7 @@ func TestServiceFetchBatchRawV2MultiNS(t *testing.T) {
 	nsID2 := "metrics2"
 
 	streams := map[string]xio.SegmentReader{}
-	series := map[string][]struct {
+	seriesData := map[string][]struct {
 		t time.Time
 		v float64
 	}{
@@ -837,7 +844,7 @@ func TestServiceFetchBatchRawV2MultiNS(t *testing.T) {
 			{start.Add(30 * time.Second), 4.0},
 		},
 	}
-	for id, s := range series {
+	for id, s := range seriesData {
 		enc := testStorageOpts.EncoderPool().Get()
 		enc.Reset(start, 0, nil)
 		for _, v := range s {
@@ -856,10 +863,12 @@ func TestServiceFetchBatchRawV2MultiNS(t *testing.T) {
 		}
 		mockDB.EXPECT().
 			ReadEncoded(ctx, ident.NewIDMatcher(nsID), ident.NewIDMatcher(id), start, end).
-			Return([][]xio.BlockReader{
-				{
+			Return(&series.FakeBlockReaderIter{
+				Readers: [][]xio.BlockReader{
 					{
-						SegmentReader: stream,
+						{
+							SegmentReader: stream,
+						},
 					},
 				},
 			}, nil)
@@ -940,9 +949,9 @@ func TestServiceFetchBatchRawOverMaxOutstandingRequests(t *testing.T) {
 	start, end = start.Truncate(time.Second), end.Truncate(time.Second)
 
 	var (
-		nsID    = "metrics"
-		streams = map[string]xio.SegmentReader{}
-		series  = map[string][]struct {
+		nsID       = "metrics"
+		streams    = map[string]xio.SegmentReader{}
+		seriesData = map[string][]struct {
 			t time.Time
 			v float64
 		}{
@@ -955,7 +964,7 @@ func TestServiceFetchBatchRawOverMaxOutstandingRequests(t *testing.T) {
 		requestIsOutstanding = make(chan struct{}, 0)
 		testIsComplete       = make(chan struct{}, 0)
 	)
-	for id, s := range series {
+	for id, s := range seriesData {
 		enc := testStorageOpts.EncoderPool().Get()
 		enc.Reset(start, 0, nil)
 		for _, v := range s {
@@ -974,10 +983,12 @@ func TestServiceFetchBatchRawOverMaxOutstandingRequests(t *testing.T) {
 				close(requestIsOutstanding)
 				<-testIsComplete
 			}).
-			Return([][]xio.BlockReader{
-				{
+			Return(&series.FakeBlockReaderIter{
+				Readers: [][]xio.BlockReader{
 					{
-						SegmentReader: stream,
+						{
+							SegmentReader: stream,
+						},
 					},
 				},
 			}, nil)
@@ -1562,7 +1573,7 @@ func TestServiceFetchTagged(t *testing.T) {
 	nsID := "metrics"
 
 	streams := map[string]xio.SegmentReader{}
-	series := map[string][]struct {
+	seriesData := map[string][]struct {
 		t time.Time
 		v float64
 	}{
@@ -1575,7 +1586,7 @@ func TestServiceFetchTagged(t *testing.T) {
 			{start.Add(30 * time.Second), 4.0},
 		},
 	}
-	for id, s := range series {
+	for id, s := range seriesData {
 		enc := testStorageOpts.EncoderPool().Get()
 		enc.Reset(start, 0, nil)
 		for _, v := range s {
@@ -1590,11 +1601,13 @@ func TestServiceFetchTagged(t *testing.T) {
 		streams[id] = stream
 		mockDB.EXPECT().
 			ReadEncoded(gomock.Any(), ident.NewIDMatcher(nsID), ident.NewIDMatcher(id), start, end).
-			Return([][]xio.BlockReader{{
-				xio.BlockReader{
-					SegmentReader: stream,
-				},
-			}}, nil)
+			Return(&series.FakeBlockReaderIter{
+				Readers: [][]xio.BlockReader{{
+					xio.BlockReader{
+						SegmentReader: stream,
+					},
+				}},
+			}, nil)
 	}
 
 	req, err := idx.NewRegexpQuery([]byte("foo"), []byte("b.*"))
@@ -2015,11 +2028,13 @@ func TestServiceFetchTaggedReturnOnFirstErr(t *testing.T) {
 	stream, _ := enc.Stream(ctx)
 	mockDB.EXPECT().
 		ReadEncoded(gomock.Any(), ident.NewIDMatcher(nsID), ident.NewIDMatcher(id), start, end).
-		Return([][]xio.BlockReader{{
-			xio.BlockReader{
-				SegmentReader: stream,
-			},
-		}}, fmt.Errorf("random err")) // Return error that should trigger failure of the entire call
+		Return(&series.FakeBlockReaderIter{
+			Readers: [][]xio.BlockReader{{
+				xio.BlockReader{
+					SegmentReader: stream,
+				},
+			}},
+		}, fmt.Errorf("random err")) // Return error that should trigger failure of the entire call
 
 	req, err := idx.NewRegexpQuery([]byte("foo"), []byte("b.*"))
 	require.NoError(t, err)

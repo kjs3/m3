@@ -670,7 +670,11 @@ func (s *service) readDatapoints(
 	start, end time.Time,
 	timeType rpc.TimeType,
 ) ([]*rpc.Datapoint, error) {
-	encoded, err := db.ReadEncoded(ctx, nsID, tsID, start, end)
+	iter, err := db.ReadEncoded(ctx, nsID, tsID, start, end)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := iter.ToSlices(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -908,7 +912,7 @@ func (i *fetchTaggedResultsIter) Next(ctx context.Context) bool {
 	if i.idx >= i.queryResults.Len() {
 		return false
 	}
-	// TODO(rhall): don't request all series blocks at once.
+
 	if i.idx == 0 {
 		for _, entry := range i.queryResults.Iter() { // nolint: gocritic
 			result := IDResult{
@@ -922,7 +926,13 @@ func (i *fetchTaggedResultsIter) Next(ctx context.Context) bool {
 				// copied by the blockRetriever in the streamRequest method when
 				// it checks if the ID is finalizeable or not with IsNoFinalize.
 				id := ident.BytesID(result.queryResult.Key())
-				result.blockReaders, i.err = i.db.ReadEncoded(ctx, i.nsID, id, i.startInclusive, i.endExclusive)
+				iter, err := i.db.ReadEncoded(ctx, i.nsID, id, i.startInclusive, i.endExclusive)
+				if err != nil {
+					i.err = err
+					return false
+				}
+				// TODO(rhall): don't request all series blocks at once.
+				result.blockReaders, i.err = iter.ToSlices(ctx)
 				if i.err != nil {
 					return false
 				}
@@ -1164,7 +1174,12 @@ func (s *service) FetchBatchRaw(tctx thrift.Context, req *rpc.FetchBatchRawReque
 	}, len(req.Ids))
 	for i := range req.Ids {
 		tsID := s.newID(ctx, req.Ids[i])
-		encoded, err := db.ReadEncoded(ctx, nsID, tsID, start, end)
+		iter, err := db.ReadEncoded(ctx, nsID, tsID, start, end)
+		if err != nil {
+			encodedResults[i].err = err
+			continue
+		}
+		encoded, err := iter.ToSlices(ctx)
 		if err != nil {
 			encodedResults[i].err = err
 			continue
@@ -1248,7 +1263,17 @@ func (s *service) FetchBatchRawV2(tctx thrift.Context, req *rpc.FetchBatchRawV2R
 		tsID := s.newID(ctx, elem.ID)
 
 		nsIdx := nsIDs[int(elem.NameSpace)]
-		encodedResult, err := db.ReadEncoded(ctx, nsIdx, tsID, start, end)
+		iter, err := db.ReadEncoded(ctx, nsIdx, tsID, start, end)
+		if err != nil {
+			rawResult.Err = convert.ToRPCError(err)
+			if tterrors.IsBadRequestError(rawResult.Err) {
+				nonRetryableErrors++
+			} else {
+				retryableErrors++
+			}
+			continue
+		}
+		encodedResult, err := iter.ToSlices(ctx)
 		if err != nil {
 			rawResult.Err = convert.ToRPCError(err)
 			if tterrors.IsBadRequestError(rawResult.Err) {
